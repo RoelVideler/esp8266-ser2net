@@ -1,5 +1,11 @@
 /*
   ESP8266 mDNS serial wifi bridge by Daniel Parnell 2nd of May 2015
+  Modified for usage with DSMR5 Smart Meters by Roel Videler 2021
+  With Code from Daniel Jong esp8266_p1meter
+  August 2021
+    - Disabled LEDs and changed Wifi pin for WeMos D1 Mini
+	- Added OTA
+	- Invert hardware UART0
  */
 
 //#define BONJOUR_SUPPORT
@@ -10,6 +16,8 @@
 #include <ESP8266mDNS.h>
 #endif
 #include <WiFiClient.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
 
 #include "esp8266_pwm.h"
 
@@ -29,7 +37,7 @@
 #define WIFI_SSID "my network"
 #define WIFI_PASSWORD "supersecret password nobody could ever guess"
 
-#define BAUD_RATE 9600
+#define BAUD_RATE 115200
 #define TCP_LISTEN_PORT 9999
 
 // if the bonjour support is turned on, then use the following as the name
@@ -39,10 +47,10 @@
 #define BUFFER_SIZE 128
 
 // hardware config
-#define WIFI_LED 14
-//#define CONNECTION_LED 16
-#define TX_LED 12
-#define RX_LED 13
+#define WIFI_LED D4
+// #define CONNECTION_LED 16
+// #define TX_LED 12
+// #define RX_LED 13
 
 #ifdef BONJOUR_SUPPORT
 // multicast DNS responder
@@ -54,31 +62,31 @@ ESP8266_PWM pwm;
 
 #ifdef STATIC_IP
 IPAddress parse_ip_address(const char *str) {
-    IPAddress result;    
-    int index = 0;
+  IPAddress result;
+  int index = 0;
 
-    result[0] = 0;
-    while (*str) {
-        if (isdigit((unsigned char)*str)) {
-            result[index] *= 10;
-            result[index] += *str - '0';
-        } else {
-            index++;
-            if(index<4) {
-              result[index] = 0;
-            }
-        }
-        str++;
+  result[0] = 0;
+  while (*str) {
+    if (isdigit((unsigned char)*str)) {
+      result[index] *= 10;
+      result[index] += *str - '0';
+    } else {
+      index++;
+      if (index < 4) {
+        result[index] = 0;
+      }
     }
-    
-    return result;
+    str++;
+  }
+
+  return result;
 }
 
 #endif
 
 void connect_to_wifi() {
   int count = 0;
-  
+
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
@@ -88,16 +96,16 @@ void connect_to_wifi() {
   IPAddress ip_address = parse_ip_address(IP_ADDRESS);
   IPAddress gateway_address = parse_ip_address(GATEWAY_ADDRESS);
   IPAddress netmask = parse_ip_address(NET_MASK);
-  
+
   WiFi.config(ip_address, gateway_address, netmask);
 #endif
-  
+
 #ifdef CONNECTION_LED
   digitalWrite(CONNECTION_LED, LOW);
 #endif
-  digitalWrite(TX_LED, LOW);
-  digitalWrite(RX_LED, LOW);
-  
+  //  digitalWrite(TX_LED, LOW);
+  //  digitalWrite(RX_LED, LOW);
+
   // Wait for WIFI connection
   while (WiFi.status() != WL_CONNECTED) {
 #ifdef USE_WDT
@@ -107,20 +115,20 @@ void connect_to_wifi() {
     count++;
     delay(250);
   }
-  
-  pwm.set(0, PWM_MAX_DUTY);  
+
+  pwm.set(0, PWM_MAX_DUTY);
 }
 
 void error() {
   int count = 0;
-  
-#ifdef CONNECTION_LED  
+
+#ifdef CONNECTION_LED
   digitalWrite(CONNECTION_LED, LOW);
 #endif
-  digitalWrite(TX_LED, LOW);
-  digitalWrite(RX_LED, LOW);
-  
-  while(1) {
+  //digitalWrite(TX_LED, LOW);
+  //digitalWrite(RX_LED, LOW);
+
+  while (1) {
     count++;
     pwm.set(0, (count & 1) ? PWM_MAX_DUTY : 0);
     delay(100);
@@ -128,32 +136,42 @@ void error() {
 }
 
 void setup(void)
-{  
+{
 #ifdef USE_WDT
   wdt_enable(1000);
 #endif
 
+
   digitalWrite(WIFI_LED, LOW);
-#ifdef CONNECTION_LED  
-  digitalWrite(CONNECTION_LED, LOW);
+#ifdef CONNECTION_LED
+  // digitalWrite(CONNECTION_LED, LOW);
 #endif
-  digitalWrite(TX_LED, LOW);
-  digitalWrite(RX_LED, LOW);
-  
-  pinMode(WIFI_LED, OUTPUT);
-#ifdef CONNECTION_LED  
+  //  digitalWrite(TX_LED, LOW);
+  //  digitalWrite(RX_LED, LOW);
+
+  //  pinMode(WIFI_LED, OUTPUT);
+#ifdef CONNECTION_LED
   pinMode(CONNECTION_LED, OUTPUT);
 #endif
-  pinMode(TX_LED, OUTPUT);
-  pinMode(RX_LED, OUTPUT);
+  //  pinMode(TX_LED, OUTPUT);
+  //  pinMode(RX_LED, OUTPUT);
 
   // set up the Wifi LED for PWM
   pwm.connect(0, WIFI_LED);
   pwm.set(0, 0);
   pwm.begin(1, 500);
-  
-  Serial.begin(BAUD_RATE);
-  
+
+  //Serial.begin(BAUD_RATE);
+  // The following code inverts the hardware serial. Code from Daniel Jongs esp8266 p1meter
+  // 
+  Serial.begin(BAUD_RATE, SERIAL_8N1, SERIAL_FULL);
+  Serial.println("");
+  Serial.println("Swapping UART0 RX to inverted");
+  Serial.flush();
+
+  // Invert the RX serialport by setting a register value, this way the TX might continue normally allowing the serial monitor to read println's
+  USC0(UART0) = USC0(UART0) | BIT(UCRXI);
+
   // Connect to WiFi network
   connect_to_wifi();
 
@@ -164,6 +182,37 @@ void setup(void)
   }
 #endif
 
+  ArduinoOTA.onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else { // U_FS
+      type = "filesystem";
+    }
+    ArduinoOTA.onEnd([]() {
+      Serial.println("\nEnd");
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+      Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+      Serial.printf("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) {
+        Serial.println("Auth Failed");
+      } else if (error == OTA_BEGIN_ERROR) {
+        Serial.println("Begin Failed");
+      } else if (error == OTA_CONNECT_ERROR) {
+        Serial.println("Connect Failed");
+      } else if (error == OTA_RECEIVE_ERROR) {
+        Serial.println("Receive Failed");
+      } else if (error == OTA_END_ERROR) {
+        Serial.println("End Failed");
+      }
+    });
+    ArduinoOTA.begin();
+    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
+    Serial.println("Start updating " + type);
+  });
   // Start TCP server
   server.begin();
 }
@@ -175,40 +224,41 @@ int pulse_counter = 1;
 
 void loop(void)
 {
+  ArduinoOTA.handle();
   size_t bytes_read;
   uint8_t net_buf[BUFFER_SIZE];
   uint8_t serial_buf[BUFFER_SIZE];
-  
+
 #ifdef USE_WDT
   wdt_reset();
 #endif
 
-  if(WiFi.status() != WL_CONNECTED) {
+  if (WiFi.status() != WL_CONNECTED) {
     // we've lost the connection, so we need to reconnect
-    if(client) {
+    if (client) {
       client.stop();
     }
     connect_to_wifi();
   }
-  
+
   pulse_counter--;
-  if(pulse_counter == 0) {
+  if (pulse_counter == 0) {
     pulse_counter = 1000;
-    if(pulse_dir) {
+    if (pulse_dir) {
       pulse++;
-      if(pulse == PWM_MAX_DUTY) {
+      if (pulse == PWM_MAX_DUTY) {
         pulse_dir = 0;
       }
     } else {
       pulse--;
-      if(pulse == 0) {
+      if (pulse == 0) {
         pulse_dir = 1;
       }
     }
-  
+
     pwm.set(0, pulse);
   }
-  
+
 #ifdef BONJOUR_SUPPORT
   // Check for any mDNS queries and send responses
   mdns.update();
@@ -217,59 +267,58 @@ void loop(void)
   // Check if a client has connected
   if (!client) {
     // eat any bytes in the serial buffer as there is nothing to see them
-    while(Serial.available()) {
+    while (Serial.available()) {
       Serial.read();
     }
-      
+
     client = server.available();
-    if(!client) {      
-#ifdef CONNECTION_LED  
+    if (!client) {
+#ifdef CONNECTION_LED
       digitalWrite(CONNECTION_LED, LOW);
-#endif      
+#endif
       return;
     }
-    
-#ifdef CONNECTION_LED  
+
+#ifdef CONNECTION_LED
     digitalWrite(CONNECTION_LED, HIGH);
 #endif
   }
 #define min(a,b) ((a)<(b)?(a):(b))
-  if(client.connected()) {
+  if (client.connected()) {
     // check the network for any bytes to send to the serial
     int count = client.available();
-    if(count > 0) {      
-      digitalWrite(TX_LED, HIGH);
-      
+    if (count > 0) {
+      // digitalWrite(TX_LED, HIGH);
+
       bytes_read = client.read(net_buf, min(count, BUFFER_SIZE));
       Serial.write(net_buf, bytes_read);
       Serial.flush();
     } else {
-      digitalWrite(TX_LED, LOW);
+      // digitalWrite(TX_LED, LOW);
     }
-    
+
     // now check the serial for any bytes to send to the network
     bytes_read = 0;
-    while(Serial.available() && bytes_read < BUFFER_SIZE) {
+    while (Serial.available() && bytes_read < BUFFER_SIZE) {
       serial_buf[bytes_read] = Serial.read();
       bytes_read++;
     }
-    
-    if(bytes_read > 0) {  
-      digitalWrite(RX_LED, HIGH);
+
+    if (bytes_read > 0) {
+      // digitalWrite(RX_LED, HIGH);
       client.write((const uint8_t*)serial_buf, bytes_read);
       client.flush();
     } else {
-      digitalWrite(RX_LED, LOW);
+      // digitalWrite(RX_LED, LOW);
     }
   } else {
     // make sure the TX and RX LEDs aren't on
-    digitalWrite(TX_LED, LOW);
-    digitalWrite(RX_LED, LOW);
-#ifdef CONNECTION_LED  
+    //    digitalWrite(TX_LED, LOW);
+    //    digitalWrite(RX_LED, LOW);
+#ifdef CONNECTION_LED
     digitalWrite(CONNECTION_LED, LOW);
 #endif
 
     client.stop();
   }
 }
-
