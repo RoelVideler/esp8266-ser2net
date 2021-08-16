@@ -1,10 +1,6 @@
 What is this?
 =============
-
-This code can be loaded into an ESP8266 module to allow it to forward a serial connection from a device to a socket on a WiFi network.
-
-It is very rough.
-
+This is the original esp8266-ser2net by dparnell, modified for use with a DSMR smart meter using a very simple connection.
 
 How do I use it?
 ================
